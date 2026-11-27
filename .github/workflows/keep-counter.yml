@@ -1,0 +1,47 @@
+# Keeps am.go's counters alive and sends an alert if the app goes quiet.
+# Runs every day at 22:17 UTC (about 9 am in Sydney); can also be run by hand from the Actions tab.
+#  1. Reads every counter. The counter service deletes a counter after 6 months without use; a read restarts that timer.
+#  2. On the 1st of each month, saves a tiny heartbeat file. GitHub pauses scheduled jobs in public repositories
+#     after 60 days with no activity, so this keeps this job from ever being paused.
+#  3. Checks the daily visit/print counters. If there has been nothing for 14 days, it opens an issue that
+#     mentions @clrayos (GitHub notifies the owner by email and in the GitHub app), and closes it when activity returns.
+#  4. If anything here fails, it opens an issue about that too.
+name: Keep am.go alive
+on:
+  schedule:
+    - cron: "17 22 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read every counter (restarts their 6-month timer)
+        run: |
+          for K in live guestbook-live saved print4x6 share-photo saved-video; do
+            curl -sS "https://abacus.jasoncameron.dev/get/archivedmoments-go/$K"; echo; sleep 1
+          done
+      - name: Monthly heartbeat (stops GitHub pausing this job)
+        run: |
+          if [ "$(date -u +%d)" = "01" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            date -u +"%Y-%m-%d %H:%M UTC" > .github/heartbeat.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/heartbeat.txt
+            git commit -m "heartbeat: keep the scheduled keep-alive job running" || true
+            git push || true
+          fi
+      - name: Check activity (alert after 14 quiet days)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/activity_check.py
+      - name: Alert if this job failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --title "am.go keep-alive job failed" \
+            --body "@clrayos the daily keep-alive job failed on $(date -u +%F). Open the Actions tab to see why, or ask Claude to take a look. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
